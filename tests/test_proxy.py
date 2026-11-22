@@ -15,7 +15,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from meshtastic.protobuf import channel_pb2, mesh_pb2
+from meshtastic.protobuf import channel_pb2, mesh_pb2, portnums_pb2
 from meshtastic.tcp_interface import TCPInterface
 from pubsub import pub
 
@@ -89,6 +89,21 @@ def handshake(nonce, heartbeat=False):
         raise AssertionError("no answer to want_config %d" % nonce)
     finally:
         sock.close()
+
+
+def send_burst(count, first_id):
+    """Sends `count` broadcast texts in one go over a plain socket, faster than
+    the radio acknowledges them."""
+    sock = socket.create_connection(("127.0.0.1", API_PORT), timeout=5)
+    data = b""
+    for i in range(count):
+        packet = mesh_pb2.MeshPacket(id=first_id + i, to=0xFFFFFFFF, want_ack=True)
+        packet.decoded.portnum = portnums_pb2.TEXT_MESSAGE_APP
+        packet.decoded.payload = b"burst %d" % i
+        body = mesh_pb2.ToRadio(packet=packet).SerializeToString()
+        data += b"\x94\xc3" + struct.pack(">H", len(body)) + body
+    sock.sendall(data)
+    return sock
 
 
 def check_background_migration(daemon):
@@ -177,6 +192,21 @@ def main():
         ack = next(line.split("\t") for line in lines if line.startswith("A\t"))
         assert ack[1] == message[2] and ack[2] == "3", ack  # implicit ack for a broadcast
         print("ok: message and acknowledgement recorded in the history")
+
+        # More messages in flight than the daemon tracks: the oldest are
+        # forgotten, the recent ones still get their acknowledgement.
+        first, count = 0x10000000, 600
+        sock = send_burst(count, first)
+        try:
+            last_ack = "A\t%d\t" % (first + count - 1)
+            wait_for(lambda: last_ack in log.read_text(), what="ack of the last message in the burst")
+            time.sleep(1.0)
+        finally:
+            sock.close()
+        acked = {int(line.split("\t")[1]) for line in log.read_text().splitlines() if line.startswith("A\t")}
+        missing = [i for i in range(first + count - 512, first + count) if i not in acked]
+        assert not missing, "%d of the 512 most recent messages never got their ack" % len(missing)
+        print("ok: the most recent messages keep their acknowledgement in a burst")
 
         # A settings change through one client reaches clients that connect later.
         channel = b.localNode.channels[2]

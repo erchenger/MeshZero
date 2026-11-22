@@ -235,6 +235,30 @@ static void test_history()
     rmdir(dir);
 }
 
+// Out-of-range ack states in a damaged log are read as "none", never cast blindly.
+static void test_history_bad_ack()
+{
+    char tmpl[] = "/tmp/mzhistXXXXXX";
+    const char* dir = mkdtemp(tmpl);
+    CHECK(dir != nullptr);
+    if (!dir) return;
+    const std::string path = std::string(dir) + "/messages.log";
+    if (FILE* f = fopen(path.c_str(), "w")) {
+        fputs("M\t1\t5\t1\t2\t0\t1\t0\t0\t0\t0\t200\tsent\n", f);  // outgoing, ack 200
+        fputs("M\t2\t6\t1\t2\t0\t1\t0\t0\t0\t0\t1\tpending\n", f);  // outgoing, pending
+        fputs("A\t6\t77\t0\n", f);                                   // bogus ack line
+        fclose(f);
+    }
+    const std::vector<StoredMsg> msgs = history_load(path);
+    CHECK(msgs.size() == 2);
+    if (msgs.size() == 2) {
+        CHECK(msgs[0].ack == AckState::None);
+        CHECK(msgs[1].ack == AckState::Pending);
+    }
+    unlink(path.c_str());
+    rmdir(dir);
+}
+
 static void test_qr()
 {
     // The link "https://meshtastic.org/e/#CgMSAQE" as a QR code, one character per module.
@@ -306,6 +330,7 @@ int main()
     test_util();
     test_battery();
     test_history();
+    test_history_bad_ack();
     test_qr();
     if (failures == 0) printf("all tests passed\n");
     return failures == 0 ? 0 : 1;

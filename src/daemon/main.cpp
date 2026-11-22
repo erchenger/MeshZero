@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <memory>
 #include <random>
@@ -319,6 +320,8 @@ private:
     std::vector<std::unique_ptr<Client>> clients_;
     HistoryWriter history_;
     std::unordered_map<uint32_t, uint32_t> outgoing_dest_;  // packet id -> destination, for ack classification
+    std::deque<uint32_t> outgoing_order_;                   // ids in outgoing_dest_, oldest first
+    static constexpr size_t kMaxTrackedOutgoing = 512;
     std::mt19937 rng_;
 };
 
@@ -940,6 +943,7 @@ void Proxy::send_control(Client& c)
                                        std::string("bg=") + (background_ ? "1" : "0"),
                                        std::string("bgask=") + (exists(background_ask_path()) ? "1" : "0")}) {
         const std::string text = kControlPrefix + setting;
+        if (text.size() > sizeof(p.decoded.payload.bytes)) continue;
         memcpy(p.decoded.payload.bytes, text.data(), text.size());
         p.decoded.payload.size = static_cast<pb_size_t>(text.size());
         client_send(c, pb_encode_msg(meshtastic_FromRadio_fields, msg));
@@ -1023,8 +1027,14 @@ void Proxy::record_outgoing(const meshtastic_MeshPacket& p)
     m.ack      = AckState::Pending;
     m.text.assign(reinterpret_cast<const char*>(p.decoded.payload.bytes), p.decoded.payload.size);
     history_.append(m);
-    if (outgoing_dest_.size() > 512) outgoing_dest_.clear();
+    // Forget only the oldest entries: clearing the whole map would leave every
+    // recent message waiting on an acknowledgement that can no longer match.
+    if (outgoing_dest_.find(p.id) == outgoing_dest_.end()) outgoing_order_.push_back(p.id);
     outgoing_dest_[p.id] = m.to;
+    while (outgoing_order_.size() > kMaxTrackedOutgoing) {
+        outgoing_dest_.erase(outgoing_order_.front());
+        outgoing_order_.pop_front();
+    }
 }
 
 void Proxy::record_incoming(const meshtastic_MeshPacket& p)

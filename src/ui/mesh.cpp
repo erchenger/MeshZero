@@ -184,6 +184,7 @@ void Mesh::send_control(const std::string& request)
     p.which_payload_variant   = meshtastic_MeshPacket_decoded_tag;
     p.decoded.portnum         = meshtastic_PortNum_PRIVATE_APP;
     const std::string text    = "mz:" + request;
+    if (text.size() > sizeof(p.decoded.payload.bytes)) return;
     memcpy(p.decoded.payload.bytes, text.data(), text.size());
     p.decoded.payload.size = static_cast<pb_size_t>(text.size());
     send_to_radio(msg);

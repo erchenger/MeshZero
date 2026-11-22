@@ -57,6 +57,14 @@ void HistoryWriter::append_ack(uint32_t id, AckState state, int error)
     write_line(line);
 }
 
+// A damaged or hand-edited log must not produce a value outside the enum.
+static AckState parse_ack(const std::string& field)
+{
+    const int v = atoi(field.c_str());
+    return v >= static_cast<int>(AckState::None) && v <= static_cast<int>(AckState::Failed) ? static_cast<AckState>(v)
+                                                                                           : AckState::None;
+}
+
 // A message record ("M") split into its fields; false for any other line.
 static bool parse_msg(const std::vector<std::string>& f, StoredMsg& m)
 {
@@ -74,7 +82,7 @@ static bool parse_msg(const std::vector<std::string>& f, StoredMsg& m)
     m.snr                = static_cast<float>(atoi(f[8].c_str())) / 4.0f;
     m.rssi               = atoi(f[9].c_str());
     m.hops               = atoi(f[10].c_str());
-    m.ack                = static_cast<AckState>(atoi(f[11].c_str()));
+    m.ack                = parse_ack(f[11]);
     m.text               = unescape_field(f[12]);
     return true;
 }
@@ -94,7 +102,8 @@ static void load_file(const std::string& path, std::vector<StoredMsg>& out, std:
             const auto it     = outgoing.find(id);
             if (it == outgoing.end()) continue;
             StoredMsg& m         = out[it->second];
-            const AckState state = static_cast<AckState>(atoi(f[2].c_str()));
+            const AckState state = parse_ack(f[2]);
+            if (state == AckState::None) continue;
             // A real acknowledgement is final; never downgrade it.
             if (m.ack == AckState::Acked) continue;
             m.ack       = state;
